@@ -1,54 +1,45 @@
 # AI Waste Classification System 🌿
 
-A production-quality web application that uses AI to classify waste images and provide recycling guidance.
+A production-quality full-stack application that uses AI to classify waste images and provide recycling guidance. Now migrated to a cloud-native architecture with Supabase and Groq.
 
 ## Features
-- **AI Classification**: Instantly identify Plastic, Metal, Paper, Organic, and Glass.
-- **Smart Chatbot**: Context-aware eco-assistant powered by Gemini.
-- **Impact Tracking**: Personal dashboard to track recycling history and environmental impact.
-- **Eco-friendly UI**: Clean, modern design with smooth animations.
-- **Authentication**: Secure JWT-based login and signup.
+- **Dual-AI Classification**: High-speed image analysis powered by **Groq Vision** (Llama 4) with **Gemini 2.0** fallback.
+- **Resilient Chatbot**: Context-aware eco-assistant using **Groq** for ultra-low latency responses.
+- **Cloud Persistence**: Full data synchronization with **Supabase (PostgreSQL)** and **Supabase Storage**.
+- **Secure Auth**: Google Social Login and Email authentication powered by **Firebase Auth**.
+- **Modern Dashboard**: Track your recycling history and environmental impact in real-time.
 
 ## Tech Stack
-- **Frontend**: React, Vite, Tailwind CSS, Framer Motion.
-- **Backend**: Node.js, Express, MongoDB, Mongoose.
-- **AI**: Google Gemini API (1.5 Flash).
+- **Frontend**: React, Vite, Tailwind CSS, Framer Motion, Firebase SDK.
+- **Backend**: Node.js, Express, Supabase SDK, Groq SDK, Google Generative AI SDK.
+- **Database & Storage**: Supabase (PostgreSQL & Object Storage).
+- **Authentication**: Firebase Admin.
 
 ## Setup Instructions
 
 ### 1. Prerequisites
 - Node.js installed.
-- MongoDB installed locally or a MongoDB Atlas URI.
-- Google Gemini API Key.
+- Supabase Project (URL & Anon Key).
+- Firebase Project (Service Account JSON).
+- Groq API Key.
+- Google Gemini API Key (Fallback).
 
 ### 2. Backend Setup
 1. Navigate to the `server` folder.
-2. Edit the `.env` file:
-   - `MONGODB_URI`: Your MongoDB connection string.
-   - `GEMINI_API_KEY`: Your Google Gemini API Key.
-3. Install dependencies: `npm install`
-4. Start the server: `npm start` (or `node index.js`)
+2. Configure `.env`:
+   - `PORT=5001`
+   - `SUPABASE_URL`, `SUPABASE_KEY`
+   - `GROQ_API_KEY`, `GEMINI_API_KEY`
+   - `JWT_SECRET`
+3. Add your `serviceAccountKey.json` from Firebase.
+4. `npm install` && `npm start`
 
 ### 3. Frontend Setup
 1. Navigate to the `client` folder.
-2. Install dependencies: `npm install`
-3. Start the development server: `npm run dev`
+2. Configure `.env`:
+   - `VITE_API_URL=http://localhost:5001/api`
+3. `npm install` && `npm run dev`
 
-### 4. Running the App
-- Open your browser to the URL provided by Vite (usually `http://localhost:5173`).
-
-## Environment Variables
-
-### Backend (.env)
-```
-PORT=5000
-MONGODB_URI=your_uri
-JWT_SECRET=your_secret
-GEMINI_API_KEY=your_key
-```
-
-### Frontend (.env)
-```
-VITE_API_URL=http://localhost:5000/api
-VITE_API_BASE_URL=http://localhost:5000
-```
+## Deployment
+- **Frontend**: Recommended for **Vercel**.
+- **Backend**: Recommended for **Render**.
