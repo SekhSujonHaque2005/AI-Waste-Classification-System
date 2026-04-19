@@ -13,13 +13,11 @@ API.interceptors.request.use((req) => {
   return req;
 });
 
-export const login = (data) => API.post('/auth/login', data);
-export const register = (data) => API.post('/auth/register', data);
 export const classifyWaste = (formData) => API.post('/waste/classify', formData, {
   headers: { 'Content-Type': 'multipart/form-data' }
 });
-export const getHistory = (userId) => API.get(`/waste/history/${userId || ''}`);
+export const getHistory = (userId) => API.get('/waste/history', { params: { userId } });
 export const sendMessage = (data) => API.post('/chat', data);
-export const getChatHistory = (userId) => API.get(`/chat/history/${userId || ''}`);
+export const getChatHistory = (userId) => API.get('/chat/history', { params: { userId } });
 
 export default API;

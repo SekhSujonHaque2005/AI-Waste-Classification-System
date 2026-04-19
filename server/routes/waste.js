@@ -2,122 +2,179 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const WasteScan = require('../models/WasteScan');
 const fs = require('fs');
 const path = require('path');
+const auth = require('../middleware/authMiddleware');
+const supabase = require('../config/supabaseClient');
+const groq = require('../config/groqClient');
 
 // Configure Multer
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
-  filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
-});
-const upload = multer({ storage });
+const upload = multer({ dest: 'uploads/' });
 
 const genAI = new GoogleGenerativeAI((process.env.GEMINI_API_KEY || '').trim());
 
 // Helper function to convert file to GoogleGenerativeAI.Part
-function fileToGenerativePart(path, mimeType) {
+function fileToGenerativePart(filePath, mimeType) {
   return {
     inlineData: {
-      data: Buffer.from(fs.readFileSync(path)).toString("base64"),
+      data: Buffer.from(fs.readFileSync(filePath)).toString("base64"),
       mimeType
     },
   };
 }
 
-// Classify Waste - With Auto-Model Fallback
-router.post('/classify', upload.single('image'), async (req, res) => {
+// Classify Waste
+router.post('/classify', auth, upload.single('image'), async (req, res) => {
+  let filePath = null;
   try {
     if (!req.file) return res.status(400).json({ message: 'No image uploaded' });
+    filePath = req.file.path;
 
-    const modelsToTry = [
-      "gemini-1.5-flash", 
-      "gemini-1.5-flash-8b",
-      "gemini-1.5-pro", 
-      "gemini-1.5-flash-001",
-      "gemini-1.5-flash-002",
-      "gemini-2.0-flash", 
-      "gemini-2.0-flash-exp"
-    ];
-    let lastError = null;
+    let classification = null;
 
-    for (const modelName of modelsToTry) {
-      try {
-        console.log(`Attempting classification with model: ${modelName}`);
-        const model = genAI.getGenerativeModel({ model: modelName });
-        
-        const prompt = `Classify this waste image into one of these categories: Plastic, Metal, Paper, Organic, Glass, or Other. 
-        Provide the result in JSON format with:
-        {
-          "wasteType": "Category Name",
-          "confidence": 0.0-1.0,
-          "recyclingInstructions": ["Step 1", "Step 2"],
-          "environmentalImpact": "Short description of impact"
-        }`;
+    // === STRATEGY 1: Try Groq Vision FIRST (fast + reliable) ===
+    try {
+      console.log('Trying Groq Vision (primary)...');
+      const base64Image = Buffer.from(fs.readFileSync(filePath)).toString("base64");
+      
+      const chatCompletion = await groq.chat.completions.create({
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: 'Classify this waste image. Respond ONLY with valid JSON in this exact format: {"wasteType": "Plastic", "confidence": 0.95, "recyclingInstructions": ["Step 1", "Step 2"], "environmentalImpact": "Description of environmental impact"}. The wasteType must be one of: Plastic, Metal, Paper, Organic, Glass, or Other.' },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:${req.file.mimetype};base64,${base64Image}`,
+                },
+              },
+            ],
+          },
+        ],
+        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      });
+      
+      const rawText = chatCompletion.choices[0].message.content;
+      console.log('Groq raw response:', rawText);
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        classification = JSON.parse(jsonMatch[0]);
+        console.log('Success with Groq Vision!');
+      }
+    } catch (groqErr) {
+      console.error('Groq Vision failed:', groqErr.message);
+    }
 
-        const imageParts = [fileToGenerativePart(req.file.path, req.file.mimetype)];
-        const result = await model.generateContent([prompt, ...imageParts]);
-        const response = await result.response;
-        const text = response.text();
-        
-        // Extract JSON from response
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error("No JSON in AI response");
-        const classification = JSON.parse(jsonMatch[0]);
-
-        // Save to DB
-        const wasteScan = new WasteScan({
-          imageUrl: `/uploads/${req.file.filename}`,
-          wasteType: classification.wasteType,
-          confidence: classification.confidence * 100,
-          recyclingInstructions: classification.recyclingInstructions,
-          environmentalImpact: classification.environmentalImpact,
-          userId: req.body.userId || null
-        });
-        await wasteScan.save();
-
-        console.log(`Success with model: ${modelName}`);
-        return res.json(wasteScan);
-      } catch (err) {
-        console.warn(`Model ${modelName} failed:`, err.message);
-        lastError = err;
-        // Continue to next model if it's a 404 or similar
-        if (err.message.includes('404') || err.message.includes('not found')) continue;
-        // If it's a 429 (Quota), we might want to try another model too
-        if (err.message.includes('429')) continue;
-        
-        // Else break and throw
-        break;
+    // === STRATEGY 2: Fallback to Gemini ===
+    if (!classification) {
+      const modelsToTry = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"];
+      for (const modelName of modelsToTry) {
+        try {
+          console.log(`Trying Gemini model: ${modelName}`);
+          const model = genAI.getGenerativeModel({ model: modelName });
+          const prompt = `Classify this waste image into Plastic, Metal, Paper, Organic, Glass, or Other. JSON format: {"wasteType": "Category", "confidence": 0.0-1.0, "recyclingInstructions": ["Step 1"], "environmentalImpact": "Desc"}`;
+          
+          const imageParts = [fileToGenerativePart(filePath, req.file.mimetype)];
+          const result = await model.generateContent([prompt, ...imageParts]);
+          const text = await result.response.text();
+          const jsonMatch = text.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            classification = JSON.parse(jsonMatch[0]);
+            console.log(`Success with Gemini: ${modelName}`);
+            break;
+          }
+        } catch (err) {
+          console.error(`Gemini ${modelName} failed:`, err.message);
+        }
       }
     }
 
-    throw lastError || new Error("All models failed");
+    if (!classification) throw new Error("All AI providers failed. Please try again.");
 
+    // Normalize confidence to percentage
+    const confidence = classification.confidence <= 1 
+      ? classification.confidence * 100 
+      : classification.confidence;
+
+    // Upload to Supabase Storage
+    const fileName = `${Date.now()}-${req.file.originalname}`;
+    const fileContent = fs.readFileSync(filePath);
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('waste-images')
+      .upload(fileName, fileContent, { contentType: req.file.mimetype });
+
+    if (uploadError) throw uploadError;
+
+    // Get public URL
+    const { data: { publicUrl } } = supabase.storage
+      .from('waste-images')
+      .getPublicUrl(fileName);
+
+    // Save to Supabase Database (user_id as text, not uuid)
+    const { data: scan, error: dbError } = await supabase
+      .from('waste_scans')
+      .insert({
+        user_id: req.dbUser?.id || null,
+        image_url: publicUrl,
+        waste_type: classification.wasteType,
+        confidence: confidence,
+        recycling_instructions: classification.recyclingInstructions,
+        environmental_impact: classification.environmentalImpact
+      })
+      .select()
+      .single();
+
+    if (dbError) throw dbError;
+
+    // Map snake_case DB fields to camelCase for frontend
+    res.json({
+      id: scan.id,
+      wasteType: scan.waste_type,
+      confidence: scan.confidence,
+      recyclingInstructions: scan.recycling_instructions,
+      environmentalImpact: scan.environmental_impact,
+      imageUrl: scan.image_url,
+      timestamp: scan.timestamp,
+    });
   } catch (err) {
-    console.error('Final Classification Error:', err);
-    res.status(500).json({ message: 'AI Classification failed: ' + err.message, error: err.message });
+    console.error('Classification Error:', err.message || err);
+    res.status(500).json({ message: 'Failed: ' + (err.message || 'Unknown error') });
+  } finally {
+    if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
   }
 });
 
 // Get History
-router.get('/history', async (req, res) => {
+router.get('/history', auth, async (req, res) => {
   try {
-    const userId = req.query.userId;
-    const query = userId ? { userId } : { userId: null };
-    const history = await WasteScan.find(query).sort({ timestamp: -1 });
-    res.json(history);
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to fetch history', error: err.message });
-  }
-});
+    const userId = req.query.userId || req.dbUser?.id;
+    
+    let query = supabase.from('waste_scans').select('*').order('timestamp', { ascending: false });
+    
+    if (userId) {
+      query = query.eq('user_id', userId);
+    } else if (req.query.userId === 'null' || !req.query.userId) {
+      query = query.is('user_id', null);
+    }
 
-router.get('/history/:userId', async (req, res) => {
-  try {
-    const userId = req.params.userId;
-    const history = await WasteScan.find({ userId }).sort({ timestamp: -1 });
-    res.json(history);
+    const { data: history, error } = await query;
+    if (error) throw error;
+    
+    // Map snake_case to camelCase for frontend
+    const mapped = (history || []).map(scan => ({
+      id: scan.id,
+      wasteType: scan.waste_type,
+      confidence: scan.confidence,
+      recyclingInstructions: scan.recycling_instructions,
+      environmentalImpact: scan.environmental_impact,
+      imageUrl: scan.image_url,
+      timestamp: scan.timestamp,
+    }));
+    res.json(mapped);
   } catch (err) {
-    res.status(500).json({ message: 'Failed to fetch history', error: err.message });
+    console.error('History fetch error:', err);
+    res.status(500).json({ message: 'Error: ' + err.message });
   }
 });
 

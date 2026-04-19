@@ -62,13 +62,17 @@ const Dashboard = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
             {history.map((scan) => (
               <motion.div 
-                key={scan._id}
+                key={scan.id}
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="bg-white rounded-3xl overflow-hidden shadow-sm border border-gray-100 hover:shadow-xl transition-all"
               >
                 <div className="h-48 overflow-hidden">
-                  <img src={`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000'}${scan.imageUrl}`} alt={scan.wasteType} className="w-full h-full object-cover transition-transform hover:scale-110 duration-500" />
+                  <img 
+                    src={scan.imageUrl.startsWith('http') ? scan.imageUrl : `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000'}${scan.imageUrl}`} 
+                    alt={scan.wasteType} 
+                    className="w-full h-full object-cover transition-transform hover:scale-110 duration-500" 
+                  />
                 </div>
                 <div className="p-6">
                   <div className="flex justify-between items-start mb-4">

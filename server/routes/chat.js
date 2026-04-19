@@ -1,102 +1,115 @@
 const express = require('express');
 const router = express.Router();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const ChatMessage = require('../models/ChatMessage');
+const auth = require('../middleware/authMiddleware');
+const supabase = require('../config/supabaseClient');
+const groq = require('../config/groqClient');
 
 const genAI = new GoogleGenerativeAI((process.env.GEMINI_API_KEY || '').trim());
 
-router.post('/', async (req, res) => {
+router.post('/', auth, async (req, res) => {
   try {
-    const { message, userId, history } = req.body;
+    const { message, history } = req.body;
+    const userId = req.body.userId || req.dbUser?.id;
     
-    const modelsToTry = [
-      "gemini-1.5-flash", 
-      "gemini-1.5-flash-8b",
-      "gemini-1.5-pro", 
-      "gemini-2.0-flash"
-    ];
-
-    let lastError = null;
     let aiResponse = null;
 
-    for (const modelName of modelsToTry) {
-      try {
-        console.log(`Chatbot attempting with model: ${modelName}`);
-        const model = genAI.getGenerativeModel({ model: modelName });
-        
-        // Gemini requires the first message to be from the 'user'
-        let chatHistory = history ? history.filter(msg => {
-          // Filter out error messages
-          return msg.content !== "Sorry, I am having trouble connecting right now.";
-        }).map(msg => ({
-          role: msg.role === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.content }],
-        })) : [];
-
-        // If the first message is from the assistant (model), remove it 
-        if (chatHistory.length > 0 && chatHistory[0].role === 'model') {
-          chatHistory.shift();
-        }
-
-        const chat = model.startChat({
-          history: chatHistory,
-          generationConfig: {
-            maxOutputTokens: 500,
+    // === STRATEGY 1: Try Groq (Primary - Ultra Fast) ===
+    try {
+      console.log('Trying Groq for chat...');
+      const chatCompletion = await groq.chat.completions.create({
+        messages: [
+          {
+            role: "system",
+            content: "You are a helpful assistant for an AI Waste Classification System called EcoScan AI. Your goal is to help users understand how to recycle, reuse, and reduce waste. Keep responses concise and practical."
           },
-          systemInstruction: {
-            parts: [{ text: "You are a helpful assistant for an AI Waste Classification System. Your goal is to help users understand how to recycle, reuse, and reduce waste. Be concise and eco-friendly in your advice." }]
-          }
-        });
+          ...(history ? history.filter(msg => msg.content !== "Sorry, I am having trouble connecting right now.").map(msg => ({
+            role: msg.role === 'user' ? 'user' : 'assistant',
+            content: msg.content
+          })) : []),
+          { role: "user", content: message }
+        ],
+        model: "llama-3.3-70b-versatile",
+      });
+      aiResponse = chatCompletion.choices[0]?.message?.content;
+      if (aiResponse) console.log('Success with Groq chat');
+    } catch (groqErr) {
+      console.error('Groq chat failed:', groqErr.message);
+      
+      // === STRATEGY 2: Fallback to Gemini ===
+      console.log('Falling back to Gemini for chat...');
+      const modelsToTry = ["gemini-2.0-flash", "gemini-2.0-flash-lite"];
+      for (const modelName of modelsToTry) {
+        try {
+          const model = genAI.getGenerativeModel({ model: modelName });
+          let chatHistory = history ? history.filter(msg => 
+            msg.content !== "Sorry, I am having trouble connecting right now."
+          ).map(msg => ({
+            role: msg.role === 'user' ? 'user' : 'model',
+            parts: [{ text: msg.content }],
+          })) : [];
 
-        const result = await chat.sendMessage(message);
-        const response = await result.response;
-        aiResponse = response.text();
-        
-        console.log(`Chatbot success with model: ${modelName}`);
-        break; // Success!
-      } catch (err) {
-        console.warn(`Chatbot model ${modelName} failed:`, err.message);
-        lastError = err;
-        if (err.message.includes('404') || err.message.includes('not found') || err.message.includes('429')) continue;
-        break;
+          if (chatHistory.length > 0 && chatHistory[0].role === 'model') {
+            chatHistory.shift();
+          }
+
+          const chat = model.startChat({
+            history: chatHistory,
+            systemInstruction: {
+              parts: [{ text: "You are a helpful assistant for EcoScan AI Waste Classification System." }]
+            }
+          });
+
+          const result = await chat.sendMessage(message);
+          aiResponse = await result.response.text();
+          if (aiResponse) {
+            console.log(`Success with Gemini chat: ${modelName}`);
+            break;
+          }
+        } catch (geminiErr) {
+          console.error(`Gemini ${modelName} failed:`, geminiErr.message);
+        }
       }
     }
 
-    if (!aiResponse) throw lastError || new Error("All chat models failed");
+    if (!aiResponse) throw new Error("All AI providers failed");
 
-    // Save user message
-    const userMsg = new ChatMessage({ userId, role: 'user', content: message });
-    await userMsg.save();
+    // Save to Supabase - skip DB save if it fails (don't block AI response)
+    try {
+      await supabase
+        .from('chat_messages')
+        .insert([
+          { user_id: userId || null, role: 'user', content: message },
+          { user_id: userId || null, role: 'assistant', content: aiResponse }
+        ]);
+    } catch (dbErr) {
+      console.error('Chat DB save failed (non-blocking):', dbErr.message);
+    }
 
-    // Save AI message
-    const assistantMsg = new ChatMessage({ userId, role: 'assistant', content: aiResponse });
-    await assistantMsg.save();
-
-    res.json(assistantMsg);
+    res.json({ role: 'assistant', content: aiResponse });
   } catch (err) {
-    console.error('Chat Error:', err);
-    res.status(500).json({ message: 'Chat failed: ' + err.message, error: err.message });
+    console.error('Chat Error:', err.message);
+    res.status(500).json({ message: 'Chat failed: ' + err.message });
   }
 });
 
-router.get('/history', async (req, res) => {
+router.get('/history', auth, async (req, res) => {
   try {
-    const userId = req.query.userId;
-    const query = userId ? { userId } : { userId: null };
-    const history = await ChatMessage.find(query).sort({ timestamp: 1 });
-    res.json(history);
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to fetch chat history', error: err.message });
-  }
-});
+    const userId = req.query.userId || req.dbUser?.id;
+    
+    let query = supabase.from('chat_messages').select('*').order('timestamp', { ascending: true });
+    
+    if (userId) {
+      query = query.eq('user_id', userId);
+    } else {
+      query = query.is('user_id', null);
+    }
 
-router.get('/history/:userId', async (req, res) => {
-  try {
-    const userId = req.params.userId;
-    const history = await ChatMessage.find({ userId }).sort({ timestamp: 1 });
+    const { data: history, error } = await query;
+    if (error) throw error;
     res.json(history);
   } catch (err) {
-    res.status(500).json({ message: 'Failed to fetch chat history', error: err.message });
+    res.status(500).json({ message: 'Error: ' + err.message });
   }
 });
 

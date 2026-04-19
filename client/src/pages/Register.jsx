@@ -1,25 +1,42 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Link, useNavigate } from 'react-router-dom';
-import { register } from '../api';
+import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
+import { auth } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import API from '../api';
 import Navbar from '../components/Navbar';
+import SocialLogin from '../components/SocialLogin';
 
 const Register = () => {
   const [formData, setFormData] = useState({ name: '', email: '', password: '' });
   const [loading, setLoading] = useState(false);
-  const { loginUser } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (user) {
+      navigate('/dashboard');
+    }
+  }, [user, navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const { data } = await register(formData);
-      loginUser(data.user, data.token);
+      // 1. Create user in Firebase
+      const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
+      
+      // 2. Set display name in Firebase
+      await updateProfile(userCredential.user, { displayName: formData.name });
+      
+      // 3. Sync with MongoDB
+      await API.post('/auth/sync');
+      
       navigate('/dashboard');
     } catch (err) {
-      alert(err.response?.data?.message || 'Registration failed');
+      console.error(err);
+      alert(err.message || 'Registration failed');
     } finally {
       setLoading(false);
     }
@@ -31,33 +48,36 @@ const Register = () => {
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-md card mt-10"
+        className="w-full max-w-md card mt-10 p-8 shadow-xl bg-white rounded-3xl"
       >
-        <h2 className="text-3xl font-bold text-center mb-8">Create Account</h2>
+        <h2 className="text-3xl font-bold text-center mb-8 text-dark">Create Account</h2>
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Full Name</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2 font-bold uppercase tracking-tight opacity-70">Full Name</label>
             <input 
               type="text" 
-              className="w-full p-3 rounded-xl border border-gray-200 focus:ring-primary focus:border-primary"
+              placeholder="John Doe"
+              className="w-full p-4 p-x-4 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all transition-duration-300"
               required
               onChange={(e) => setFormData({...formData, name: e.target.value})}
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Email Address</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2 font-bold uppercase tracking-tight opacity-70">Email Address</label>
             <input 
               type="email" 
-              className="w-full p-3 rounded-xl border border-gray-200 focus:ring-primary focus:border-primary"
+              placeholder="eco@example.com"
+              className="w-full p-4 p-x-4 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all transition-duration-300"
               required
               onChange={(e) => setFormData({...formData, email: e.target.value})}
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2 font-bold uppercase tracking-tight opacity-70">Password</label>
             <input 
               type="password" 
-              className="w-full p-3 rounded-xl border border-gray-200 focus:ring-primary focus:border-primary"
+              placeholder="••••••••"
+              className="w-full p-4 p-x-4 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all transition-duration-300"
               required
               onChange={(e) => setFormData({...formData, password: e.target.value})}
             />
@@ -65,13 +85,21 @@ const Register = () => {
           <button 
             type="submit" 
             disabled={loading}
-            className="w-full btn-primary py-3"
+            className="w-full btn-primary py-4 shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 active:scale-[0.98] transition-all"
           >
-            {loading ? 'Creating...' : 'Sign Up'}
+            {loading ? (
+              <div className="flex items-center justify-center space-x-2">
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                <span>Creating...</span>
+              </div>
+            ) : 'Sign Up'}
           </button>
         </form>
-        <p className="text-center mt-6 text-gray-600">
-          Already have an account? <Link to="/login" className="text-primary font-bold">Sign In</Link>
+
+        <SocialLogin />
+
+        <p className="text-center mt-8 text-gray-500 font-medium">
+          Already have an account? <Link to="/login" className="text-primary font-bold hover:underline decoration-2">Sign In</Link>
         </p>
       </motion.div>
     </div>

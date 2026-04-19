@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const path = require('path');
 
@@ -20,11 +19,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/waste', require('./routes/waste'));
 app.use('/api/chat', require('./routes/chat'));
 
-// MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/waste-ai')
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => console.log('MongoDB connection error:', err));
-
+// Base Route
 app.get('/', (req, res) => {
   res.send('AI Waste Classification API is running...');
 });
